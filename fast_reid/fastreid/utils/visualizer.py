@@ -66,7 +66,7 @@ class Visualizer:
             plt.clf()
             ax = fig.add_subplot(1, max_rank + 1, 1)
             ax.imshow(query_img)
-            ax.set_title('{:.4f}/cam{}'.format(self.all_ap[q_idx], cam_id))
+            ax.set_title('{}/{:.2f}/cam{}'.format(query_name, self.all_ap[q_idx], cam_id))
             ax.axis("off")
             for i in range(max_rank):
                 if vis_label:
@@ -112,7 +112,7 @@ class Visualizer:
             #         axes.flat[i].imshow(acts[i], alpha=0.3, cmap='jet')
             if vis_label:
                 label_indice = np.where(cmc == 1)[0]
-                if label_sort == "ascending": label_indice = label_indice[::-1]
+                if label_sort == "ascending":   label_indice = label_indice[::-1]
                 label_indice = label_indice[:max_rank]
                 for i in range(max_rank):
                     if i >= len(label_indice): break
@@ -153,7 +153,7 @@ class Visualizer:
         query_indices = np.argsort(self.all_ap)
         if rank_sort == 'descending': query_indices = query_indices[::-1]
 
-        query_indices = query_indices[:int(num_vis)]
+        query_indices = query_indices[:num_vis]
         self.save_rank_result(query_indices, output, max_rank, vis_label, label_sort, actmap)
 
     def vis_roc_curve(self, output):
@@ -176,9 +176,9 @@ class Visualizer:
         self.plot_roc_curve(fpr, tpr)
         filepath = os.path.join(output, "roc.jpg")
         plt.savefig(filepath)
-        # self.plot_distribution(pos, neg)
-        # filepath = os.path.join(output, "pos_neg_dist.jpg")
-        # plt.savefig(filepath)
+        self.plot_distribution(pos, neg)
+        filepath = os.path.join(output, "pos_neg_dist.jpg")
+        plt.savefig(filepath)
         return fpr, tpr, pos, neg
 
     @staticmethod

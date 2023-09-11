@@ -10,7 +10,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-__all__ = ["IBN", "get_norm"]
+__all__ = [
+    "BatchNorm",
+    "IBN",
+    "GhostBatchNorm",
+    "FrozenBatchNorm",
+    "SyncBatchNorm",
+    "get_norm",
+]
 
 
 class BatchNorm(nn.BatchNorm2d):
@@ -75,7 +82,7 @@ class GhostBatchNorm(BatchNorm):
                 self.weight, self.bias, False, self.momentum, self.eps)
 
 
-class FrozenBatchNorm(nn.Module):
+class FrozenBatchNorm(BatchNorm):
     """
     BatchNorm2d where the batch statistics and the affine parameters are fixed.
     It contains non-trainable buffers called
@@ -94,13 +101,9 @@ class FrozenBatchNorm(nn.Module):
     _version = 3
 
     def __init__(self, num_features, eps=1e-5, **kwargs):
-        super().__init__()
+        super().__init__(num_features, weight_freeze=True, bias_freeze=True, **kwargs)
         self.num_features = num_features
         self.eps = eps
-        self.register_buffer("weight", torch.ones(num_features))
-        self.register_buffer("bias", torch.zeros(num_features))
-        self.register_buffer("running_mean", torch.zeros(num_features))
-        self.register_buffer("running_var", torch.ones(num_features) - eps)
 
     def forward(self, x):
         if x.requires_grad:
@@ -185,7 +188,7 @@ def get_norm(norm, out_channels, **kwargs):
     """
     Args:
         norm (str or callable): either one of BN, GhostBN, FrozenBN, GN or SyncBN;
-            or a callable that takes a channel number and returns
+            or a callable that thakes a channel number and returns
             the normalization layer as a nn.Module
         out_channels: number of channels for normalization layer
 
@@ -197,9 +200,9 @@ def get_norm(norm, out_channels, **kwargs):
             return None
         norm = {
             "BN": BatchNorm,
-            "syncBN": SyncBatchNorm,
             "GhostBN": GhostBatchNorm,
             "FrozenBN": FrozenBatchNorm,
             "GN": lambda channels, **args: nn.GroupNorm(32, channels),
+            "syncBN": SyncBatchNorm,
         }[norm]
     return norm(out_channels, **kwargs)

@@ -5,10 +5,8 @@ import os
 import sys
 import time
 from collections import Counter
-
-from termcolor import colored
-
 from .file_io import PathManager
+from termcolor import colored
 
 
 class _ColorfulFormatter(logging.Formatter):

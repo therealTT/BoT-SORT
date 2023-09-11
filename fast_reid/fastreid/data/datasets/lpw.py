@@ -15,9 +15,7 @@ __all__ = ['LPW', ]
 
 @DATASET_REGISTRY.register()
 class LPW(ImageDataset):
-    """LPW
-    """
-    dataset_dir = "pep_256x128/data_slim"
+    dataset_dir = "pep_256x128"
     dataset_name = "lpw"
 
     def __init__(self, root='datasets', **kwargs):

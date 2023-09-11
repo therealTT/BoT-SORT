@@ -1,180 +1,114 @@
 import queue
 import numpy as np
-from pgvector.psycopg import register_vector
-import psycopg
-
 
 from scipy.spatial.distance import cdist
 import faiss
 
 from tracker.bot_sort import BoTSORT
-from collections import Counter
 
 
 class MultiCameraTracking:
     def __init__(self, args, frame_rate=30,time_window=50, global_match_thresh=0.35):
 
-        num_sources = len(args.path)
-        # #self.all_tracks = {}
-        #self.cam_id_list = []
+        self.time = 0
+        self.last_global_id = 0
+        self.global_ids_queue = queue.Queue()
+        assert time_window >= 1
+        self.time_window = time_window  # should be greater than time window in scts
+        assert 0 <= global_match_thresh <= 1
+        self.global_match_thresh = global_match_thresh
+        self.num_sources = len(args.path)
+        self.all_tracks = {}
+        self.cam_id_list = []
         self.all_features = []
-        #self.all_track_ids = []
-        #self.indexes = []
+        self.all_track_ids = []
+        self.indexes = []
         self.trackers = []
-        #self.num = 0
-        self.frame_id = 0
-        self.person_id = 0
+        self.num = 0
+        self.tracks_in_use = []
         
+        
+        d = 2048
+        
+        for i in range(self.num_sources): 
+            index = faiss.IndexFlatL2(d)
+            self.indexes.append(index) 
+        print(self.indexes)
 
-        for i in range(num_sources):
+        for i in range(self.num_sources):
             self.trackers.append(BoTSORT(args, frame_rate=args.fps))
         print(self.trackers)
 
         
-        #creating database and table
-
-        self.conn = psycopg.connect(dbname='testdb', autocommit=True, port=5440)
-        self.conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
-        register_vector(self.conn)
-        self.conn.execute('DROP TABLE IF EXISTS detections')
-        self.conn.execute('CREATE TABLE detections (id integer PRIMARY KEY, cam_id integer, activated BOOLEAN, x integer, y integer, width integer, height integer, person_id integer, person_name varchar, embedding vector(1024))')
-        self.conn.execute('CREATE INDEX ON detections USING ivfflat (embedding vector_cosine_ops)')
-
-        query = 'SELECT COUNT(*) FROM detections'
-        result = self.conn.execute(query).fetchall()
-        print(result[0][0])
-        if result[0][0] == 0:
-            self.num = result[0][0]
-        else:
-            self.num = result[0][0] + 1
-        
     def process(self, output_results, img, cam_id):
 
-        #self.frame_id += 1
-        active_tracks = []
-        self.conn.execute('UPDATE detections SET activated = False')
         new_tracks = self.trackers[cam_id].update(output_results, img)
+
         return_tracks = []
-        for track in new_tracks: 
-            #index = self.indexes[cam_id]
+        for track in new_tracks:
+            merged = False
+            best_distance = 0.8 
+            index = self.indexes[cam_id]
             if track.curr_feat is not None:
-                x = track.tlwh[0]
-                y = track.tlwh[1]
-                width = track.tlwh[2]
-                height = track.tlwh[3]
 
-                # query = 'SELECT COUNT(*) FROM detections'
+                #self.all_features.append(track.curr_feat)
 
-                # result = self.conn.execute(query).fetchall()
-                # if result[0][0] < 100:
-
-                #Adding track to database
-                query = 'INSERT INTO detections (id, cam_id, activated, x, y, width, height, person_id, person_name, embedding) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)'
-                self.conn.execute(query, (self.num, cam_id, False, x, y, width, height, track.track_id, 'unknown', track.curr_feat.astype(np.float32)))
-                print(active_tracks, "Active tracks")
-                for i in active_tracks:
-                    query = 'UPDATE detections SET activated = %s WHERE person_id = %s'
-                    self.conn.execute(query,(True,i))
-
-                if self.num > 0: #if there is more than one track in the database then proceed
-                    
-                    query_vector = track.curr_feat.astype(np.float32)
-                    #print(i)
-                    #query = 'SELECT person_id, embedding, embedding::vector <-> %s::vector AS distance FROM detections WHERE cam_id != %s ORDER BY embedding::vector <-> %s::vector LIMIT 20'
-                    
-                    #query to select the most common person id under a certain threshold
-                    most_common = 'SELECT person_id, COUNT(*) AS count \
-                            FROM (SELECT person_id, embedding, embedding::vector <-> %s::vector AS distance FROM detections \
-                            WHERE cam_id != %s AND embedding::vector <-> %s::vector < %s AND activated = %s ORDER BY embedding::vector <-> %s::vector LIMIT 101) \
-                            AS subquery \
-                            GROUP BY person_id \
-                            ORDER BY count DESC \
-                            LIMIT 1;'
-                    most_common_result = self.conn.execute(most_common, (query_vector, cam_id, query_vector, 0.15, False, query_vector)).fetchall()
-                    print("most common", most_common_result)
-                    #track_ids = [row[0] for row in result if row[2] <= 0.01]
-
-
-                    if len(most_common_result) == 0: #checking if there are results for the most_common query
-                        cam_count = 'SELECT DISTINCT cam_id from detections'
-                        cam_count_result = self.conn.execute(cam_count).fetchall()
-                        if len(cam_count_result) > 1: #checking if there are more than one camera sources
-                            same_common = 'SELECT person_id, COUNT(*) AS count \
-                                    FROM (SELECT person_id, embedding, embedding::vector <-> %s::vector AS distance FROM detections \
-                                    WHERE embedding::vector <-> %s::vector < %s AND activated = %s AND id != %s ORDER BY embedding::vector <-> %s::vector LIMIT 101) \
-                                    AS subquery \
-                                    GROUP BY person_id \
-                                    ORDER BY count DESC \
-                                    LIMIT 1;'
-                            same_common_result = self.conn.execute(same_common, (query_vector, query_vector, 0.95, False, self.num, query_vector)).fetchall()
-                            print("same_common",same_common_result)
-                            if len(same_common_result) == 0:
-                                print("no common")
-                                max_personid = 'SELECT max(person_id) FROM detections WHERE id != %s'
-                                max_personid_result = self.conn.execute(max_personid,(self.num,)).fetchall()
-                                self.person_id = max_personid_result[0][0] + 1 
-                                #increase the person id by one because this means that there is no nearest neighbor for the vector, hence a new person
-                                
-                                update = 'UPDATE detections SET person_id = %s WHERE id = %s' #update the person id for that detection
-                                self.conn.execute(update,(self.person_id, self.num))
-                                return_tracks.append(Merge(self.person_id, track.tlwh, track.score, 'unknown'))
-                                active_tracks.append(self.person_id)
-                            else:
-                                update = 'UPDATE detections SET person_id = %s, person_name = %s WHERE id = %s'
-                                self.person_id = same_common_result[0][0]
-                                name_query = 'SELECT person_name FROM detections WHERE person_id = %s'
-                                name_result = self.conn.execute(name_query,(self.person_id,)).fetchone()
-                                self.conn.execute(update,(self.person_id, name_result[0], self.num))
-                                return_tracks.append(Merge(self.person_id, track.tlwh, track.score, name_result[0]))
-                                active_tracks.append(self.person_id)
+                # self.all_track_ids.append(track.track_id)
+                # self.cam_id_list.append(cam_id)
+                print(track.track_id, "current track original ID")
+                print(cam_id,"original cam id")
+                #all_features = np.array(self.all_features)
+                query_feature = track.curr_feat.reshape(1,-1).astype('float32')
+                if self.num >= 1:
+                    for cam in range(self.num_sources):
+                        print(cam,"iterating cam id")
+                        if cam != cam_id:
+                            print(cam,"iterating cam id but not the same cam id as original")
+                            D, I = self.indexes[cam].search(query_feature, 1)
+                            distance = D[0][0]
+                            print(distance, "closest distance")
+                            if distance < best_distance:
+                                best_distance = distance
+                                nearest_index = I[0][0]
+                                print(nearest_index, "index of the track")
+                                nearest_track_id = self.all_tracks[cam][nearest_index]
+                                print(nearest_track_id, "corresponding track id")
+                                self.tracks_in_use.append(nearest_track_id)
+                                merged = True
+                    if merged == False:
+                        D, I = self.indexes[cam_id].search(query_feature, 1)
+                        print(cam_id,"should be the same as original cam id")
+                        distance = D[0][0]
+                        print(distance, "distance when there isnt one is diff cam")
+                        if distance < best_distance:
+                            best_distance = distance
+                            nearest_index = I[0][0]
+                            nearest_track_id = self.all_tracks[cam_id][nearest_index]
+                            print(nearest_track_id, "track id in same cam")
+                            self.tracks_in_use.append(nearest_track_id)
                         else:
-                            return_tracks.append(Merge(track.track_id,track.tlwh,track.score,'unknown'))
-
-                    else: #when there is a result for most_common query, update the current detection with that person id
-                        update = 'UPDATE detections SET person_id = %s, person_name = %s WHERE id = %s'
-                        self.person_id = most_common_result[0][0]
-                        name_query = 'SELECT person_name FROM detections WHERE person_id = %s'
-                        name_result = self.conn.execute(name_query,(self.person_id,)).fetchone()
-                        self.conn.execute(update,(self.person_id, name_result[0], self.num)) 
-                        return_tracks.append(Merge(self.person_id, track.tlwh, track.score, name_result[0]))
-                        active_tracks.append(self.person_id)
-                    #print("frame id", self.frame_id/2, "New track id", self.person_id)
+                            nearest_track_id = max(set(self.tracks_in_use)) + 1
+                            print(nearest_track_id, "track id when no matches")
                 else:
-                    return_tracks.append(Merge(track.track_id,track.tlwh,track.score,'unknown'))
+                    nearest_track_id = track.track_id
+                    print(nearest_track_id, "track id for first one")
+                if cam_id in self.all_tracks:
+                    self.all_tracks[cam_id].append(nearest_track_id)
+                else:
+                    self.all_tracks[cam_id] = [nearest_track_id]
+
                 self.num += 1
-
-        return return_tracks
-
-class Merge():
-    def __init__(self, track_id, tlwh, score, name):
-        self.track_id = track_id
-        self.tlwh = tlwh
-        self.score = score
-        self.name = name
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                return_tracks.append(Merge(nearest_track_id, track.tlwh, track.score, 'unknown', cam_id))
+                index.add(track.curr_feat.reshape(1,-1).astype('float32'))
+            # if neighbour == False:
+            #     D, I = self.indexes[cam_id].search(query_feature, 1)
+            #     same_distance = D[0][0]
+            #     if same_distance < best_distance:
+            #         best_distance = distance
+            #         nearest_index = I[0][0]
+            #         nearest_track_id = self.all_tracks[cam][nearest_index]
+            #     else:
+            #         continue
 
             #print(self.all_tracks)
 
@@ -195,14 +129,22 @@ class Merge():
             #                 continue
 
                     
-            #         if best_distance < 0.1:
-            #             print("merging {} with {}".format(track.track_id, nearest_track_id))
-            #             merged = True
-            #             #track.track_id = nearest_track_id
-            #     else:
-            #         continue
+                #     if best_distance < 0.1:
+                #         print("merging {} with {}".format(track.track_id, nearest_track_id))
+                #         merged = True
+                #         #track.track_id = nearest_track_id
+                # else:
+                #     continue
+        return return_tracks
 
-
+class Merge:
+    def __init__(self, track_id, tlwh, score, name, cam_id):
+        self.track_id = track_id
+        self.tlwh = tlwh
+        self.score = score
+        self.name = name
+        self.cam_id = cam_id
+        # Other attributes...
 
 
 

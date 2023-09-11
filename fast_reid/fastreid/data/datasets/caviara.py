@@ -5,18 +5,20 @@
 """
 
 import os
+from scipy.io import loadmat
 from glob import glob
 
 from fast_reid.fastreid.data.datasets import DATASET_REGISTRY
 from fast_reid.fastreid.data.datasets.bases import ImageDataset
+import pdb
+import random
+import numpy as np
 
-__all__ = ['CAVIARa', ]
+__all__ = ['CAVIARa',]
 
 
 @DATASET_REGISTRY.register()
 class CAVIARa(ImageDataset):
-    """CAVIARa
-    """
     dataset_dir = "CAVIARa"
     dataset_name = "caviara"
 

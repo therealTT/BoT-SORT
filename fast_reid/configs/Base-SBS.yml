@@ -1,15 +1,15 @@
-_BASE_: Base-bagtricks.yml
+_BASE_: "Base-bagtricks.yml"
 
 MODEL:
-  FREEZE_LAYERS: [ backbone ]
+  FREEZE_LAYERS: ["backbone"]
 
   BACKBONE:
     WITH_NL: True
 
   HEADS:
-    NECK_FEAT: after
-    POOL_LAYER: GeneralizedMeanPoolingP
-    CLS_LAYER: CircleSoftmax
+    NECK_FEAT: "after"
+    POOL_LAYER: "gempoolP"
+    CLS_LAYER: "circleSoftmax"
     SCALE: 64
     MARGIN: 0.35
 
@@ -18,7 +18,6 @@ MODEL:
     CE:
       EPSILON: 0.1
       SCALE: 1.0
-
     TRI:
       MARGIN: 0.0
       HARD_MINING: True
@@ -26,39 +25,36 @@ MODEL:
       SCALE: 1.0
 
 INPUT:
-  SIZE_TRAIN: [ 384, 128 ]
-  #SIZE_TEST: [ 384, 128] #Botsrt model
-  SIZE_TEST: [ 224, 224 ]
-
-  AUTOAUG:
-    ENABLED: True
-    PROB: 0.1
+  SIZE_TRAIN: [384, 128]
+  SIZE_TEST: [384, 128]
+  #SIZE_TEST: [224, 224] ##for levit model
+  DO_AUTOAUG: True
 
 DATALOADER:
   NUM_INSTANCE: 16
 
 SOLVER:
-  AMP:
-    ENABLED: True
-  OPT: Adam
-  MAX_EPOCH: 60
+  OPT: "Adam"
+  MAX_ITER: 60
   BASE_LR: 0.00035
+  BIAS_LR_FACTOR: 1.
   WEIGHT_DECAY: 0.0005
-  IMS_PER_BATCH: 64
+  WEIGHT_DECAY_BIAS: 0.0005
+  IMS_PER_BATCH: 1000
 
-  SCHED: CosineAnnealingLR
-  DELAY_EPOCHS: 30
-  ETA_MIN_LR: 0.0000007
+  SCHED: "WarmupCosineAnnealingLR"
+  DELAY_ITERS: 30
+  ETA_MIN_LR: 0.00000077
 
-  WARMUP_FACTOR: 0.1
-  WARMUP_ITERS: 2000
+  WARMUP_FACTOR: 0.01
+  WARMUP_ITERS: 10
+  FREEZE_ITERS: 10
 
-  FREEZE_ITERS: 1000
-
-  CHECKPOINT_PERIOD: 1
+  CHECKPOINT_PERIOD: 30
 
 TEST:
-  EVAL_PERIOD: 1000
-  IMS_PER_BATCH: 128
+  EVAL_PERIOD: 30
+  IMS_PER_BATCH: 500
 
-CUDNN_BENCHMARK: False # True
+CUDNN_BENCHMARK: True
+

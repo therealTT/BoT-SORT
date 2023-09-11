@@ -7,7 +7,6 @@
 import copy
 import logging
 import os
-
 from tabulate import tabulate
 from termcolor import colored
 
@@ -17,11 +16,10 @@ logger = logging.getLogger(__name__)
 class Dataset(object):
     """An abstract class representing a Dataset.
     This is the base class for ``ImageDataset`` and ``VideoDataset``.
-
     Args:
-        train (list or Callable): contains tuples of (img_path(s), pid, camid).
-        query (list or Callable): contains tuples of (img_path(s), pid, camid).
-        gallery (list or Callable): contains tuples of (img_path(s), pid, camid).
+        train (list): contains tuples of (img_path(s), pid, camid).
+        query (list): contains tuples of (img_path(s), pid, camid).
+        gallery (list): contains tuples of (img_path(s), pid, camid).
         transform: transform function.
         mode (str): 'train', 'query' or 'gallery'.
         combineall (bool): combines train, query and gallery in a
@@ -32,13 +30,16 @@ class Dataset(object):
 
     def __init__(self, train, query, gallery, transform=None, mode='train',
                  combineall=False, verbose=True, **kwargs):
-        self._train = train
-        self._query = query
-        self._gallery = gallery
+        self.train = train
+        self.query = query
+        self.gallery = gallery
         self.transform = transform
         self.mode = mode
         self.combineall = combineall
         self.verbose = verbose
+
+        self.num_train_pids = self.get_num_pids(self.train)
+        self.num_train_cams = self.get_num_cams(self.train)
 
         if self.combineall:
             self.combine_all()
@@ -52,24 +53,6 @@ class Dataset(object):
         else:
             raise ValueError('Invalid mode. Got {}, but expected to be '
                              'one of [train | query | gallery]'.format(self.mode))
-
-    @property
-    def train(self):
-        if callable(self._train):
-            self._train = self._train()
-        return self._train
-
-    @property
-    def query(self):
-        if callable(self._query):
-            self._query = self._query()
-        return self._query
-
-    @property
-    def gallery(self):
-        if callable(self._gallery):
-            self._gallery = self._gallery()
-        return self._gallery
 
     def __getitem__(self, index):
         raise NotImplementedError
@@ -92,9 +75,9 @@ class Dataset(object):
         """
         pids = set()
         cams = set()
-        for info in data:
-            pids.add(info[1])
-            cams.add(info[2])
+        for _, pid, camid in data:
+            pids.add(pid)
+            cams.add(camid)
         return len(pids), len(cams)
 
     def get_num_pids(self, data):
@@ -117,14 +100,15 @@ class Dataset(object):
             for img_path, pid, camid in data:
                 if pid in self._junk_pids:
                     continue
-                pid = getattr(self, "dataset_name", "Unknown") + "_test_" + str(pid)
-                camid = getattr(self, "dataset_name", "Unknown") + "_test_" + str(camid)
+                pid = self.dataset_name + "_" + str(pid)
+                camid = self.dataset_name + "_" + str(camid)
                 combined.append((img_path, pid, camid))
 
         _combine_data(self.query)
         _combine_data(self.gallery)
 
-        self._train = combined
+        self.train = combined
+        self.num_train_pids = self.get_num_pids(self.train)
 
     def check_before_run(self, required_files):
         """Checks if required files exist before going deeper.
@@ -147,6 +131,9 @@ class ImageDataset(Dataset):
     where ``img`` has shape (channel, height, width). As a result,
     data in each batch has shape (batch_size, channel, height, width).
     """
+
+    def __init__(self, train, query, gallery, **kwargs):
+        super(ImageDataset, self).__init__(train, query, gallery, **kwargs)
 
     def show_train(self):
         num_train_pids, num_train_cams = self.parse_data(self.train)

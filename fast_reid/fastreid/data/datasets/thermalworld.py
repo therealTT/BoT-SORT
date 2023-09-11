@@ -5,18 +5,20 @@
 """
 
 import os
+from scipy.io import loadmat
 from glob import glob
 
 from fast_reid.fastreid.data.datasets import DATASET_REGISTRY
 from fast_reid.fastreid.data.datasets.bases import ImageDataset
+import pdb
+import random
+import numpy as np
 
-__all__ = ['Thermalworld', ]
+__all__ = ['Thermalworld',]
 
 
 @DATASET_REGISTRY.register()
 class Thermalworld(ImageDataset):
-    """thermal world
-    """
     dataset_dir = "thermalworld_rgb"
     dataset_name = "thermalworld"
 
@@ -36,7 +38,7 @@ class Thermalworld(ImageDataset):
         pid_list = os.listdir(train_path)
         for pid_dir in pid_list:
             pid = self.dataset_name + "_" + pid_dir
-            img_list = glob(os.path.join(train_path, pid_dir, "*.jpg"))
+            img_list = glob(os.path.join(train_path, pid_dir,  "*.jpg"))
             for img_path in img_list:
                 camid = self.dataset_name + "_cam0"
                 data.append([img_path, pid, camid])

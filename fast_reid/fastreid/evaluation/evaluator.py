@@ -6,7 +6,6 @@ from contextlib import contextmanager
 
 import torch
 
-from fast_reid.fastreid.utils import comm
 from fast_reid.fastreid.utils.logger import log_every_n_seconds
 
 
@@ -79,7 +78,7 @@ class DatasetEvaluator:
 #         return results
 
 
-def inference_on_dataset(model, data_loader, evaluator, flip_test=False):
+def inference_on_dataset(model, data_loader, evaluator,levit_config=False):
     """
     Run model on the data_loader and evaluate the metrics with evaluator.
     The model will be used in eval mode.
@@ -93,11 +92,9 @@ def inference_on_dataset(model, data_loader, evaluator, flip_test=False):
         evaluator (DatasetEvaluator): the evaluator to run. Use
             :class:`DatasetEvaluators([])` if you only want to benchmark, but
             don't want to do any evaluation.
-        flip_test (bool): If get features with flipped images
     Returns:
         The return value of `evaluator.evaluate()`
     """
-    num_devices = comm.get_world_size()
     logger = logging.getLogger(__name__)
     logger.info("Start inference on {} images".format(len(data_loader.dataset)))
 
@@ -107,6 +104,8 @@ def inference_on_dataset(model, data_loader, evaluator, flip_test=False):
     num_warmup = min(5, total - 1)
     start_time = time.perf_counter()
     total_compute_time = 0
+    img_paths = []
+    labels = []
     with inference_context(model), torch.no_grad():
         for idx, inputs in enumerate(data_loader):
             if idx == num_warmup:
@@ -114,17 +113,15 @@ def inference_on_dataset(model, data_loader, evaluator, flip_test=False):
                 total_compute_time = 0
 
             start_compute_time = time.perf_counter()
-            outputs = model(inputs)
-            # Flip test
-            if flip_test:
-                inputs["images"] = inputs["images"].flip(dims=[3])
-                flip_outputs = model(inputs)
-                outputs = (outputs + flip_outputs) / 2
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            if levit_config==True:
+                outputs = model(inputs['images'])
+            else:
+                outputs = model(inputs)
             total_compute_time += time.perf_counter() - start_compute_time
             evaluator.process(inputs, outputs)
-
+            img_paths.extend(inputs['img_paths'])
+            labels.extend(inputs['targets'])
+            idx += 1
             iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
             seconds_per_batch = total_compute_time / iters_after_start
             if idx >= num_warmup * 2 or seconds_per_batch > 30:
@@ -143,23 +140,27 @@ def inference_on_dataset(model, data_loader, evaluator, flip_test=False):
     total_time_str = str(datetime.timedelta(seconds=total_time))
     # NOTE this format is parsed by grep
     logger.info(
-        "Total inference time: {} ({:.6f} s / batch per device, on {} devices)".format(
-            total_time_str, total_time / (total - num_warmup), num_devices
+        "Total inference time: {} ({:.6f} s / batch per device)".format(
+            total_time_str, total_time / (total - num_warmup)
         )
     )
     total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
     logger.info(
-        "Total inference pure compute time: {} ({:.6f} s / batch per device, on {} devices)".format(
-            total_compute_time_str, total_compute_time / (total - num_warmup), num_devices
+        "Total inference pure compute time: {} ({:.6f} s / batch per device)".format(
+            total_compute_time_str, total_compute_time / (total - num_warmup)
         )
     )
-    results = evaluator.evaluate()
-
+    results, sim_mtx = evaluator.evaluate()
+    print(sim_mtx.shape)
+    print(len(img_paths))
+    print(img_paths[0])
+    print(img_paths[3369])
+    print(len(labels))
     # An evaluator may return None when not in main process.
     # Replace it by an empty dict instead to make it easier for downstream code to handle
     if results is None:
         results = {}
-    return results
+    return results, sim_mtx, img_paths, labels
 
 
 @contextmanager

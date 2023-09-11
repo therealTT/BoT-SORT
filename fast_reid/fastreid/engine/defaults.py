@@ -10,15 +10,18 @@ since they are meant to represent the "common default behavior" people need in t
 
 import argparse
 import logging
-import os
+import os, random
 import sys
 from collections import OrderedDict
+import pickle
+
 
 import torch
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from fast_reid.fastreid.data import build_reid_test_loader, build_reid_train_loader
-from fast_reid.fastreid.evaluation import (ReidEvaluator,
+from fast_reid.fastreid.evaluation import (DatasetEvaluator, ReidEvaluator,
                                  inference_on_dataset, print_csv_format)
 from fast_reid.fastreid.modeling.meta_arch import build_model
 from fast_reid.fastreid.solver import build_lr_scheduler, build_optimizer
@@ -30,7 +33,7 @@ from fast_reid.fastreid.utils.events import CommonMetricPrinter, JSONWriter, Ten
 from fast_reid.fastreid.utils.file_io import PathManager
 from fast_reid.fastreid.utils.logger import setup_logger
 from . import hooks
-from .train_loop import TrainerBase, AMPTrainer, SimpleTrainer
+from .train_loop import SimpleTrainer
 
 __all__ = ["default_argument_parser", "default_setup", "DefaultPredictor", "DefaultTrainer"]
 
@@ -43,6 +46,11 @@ def default_argument_parser():
     """
     parser = argparse.ArgumentParser(description="fastreid Training")
     parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
+    parser.add_argument(
+        "--finetune",
+        action="store_true",
+        help="whether to attempt to finetune from the trained model",
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -58,7 +66,8 @@ def default_argument_parser():
     # PyTorch still may leave orphan processes in multi-gpu training.
     # Therefore we use a deterministic way to obtain port,
     # so that users are aware of orphan processes by seeing the port occupied.
-    port = 2 ** 15 + 2 ** 14 + hash(os.getuid() if sys.platform != "win32" else 1) % 2 ** 14
+    # port = 2 ** 15 + 2 ** 14 + hash(os.getuid() if sys.platform != "win32" else 1) % 2 ** 14
+    port = 30000 + random.randint(1, 10000) + random.randint(1, 5000)
     parser.add_argument("--dist-url", default="tcp://127.0.0.1:{}".format(port))
     parser.add_argument(
         "opts",
@@ -66,6 +75,7 @@ def default_argument_parser():
         default=None,
         nargs=argparse.REMAINDER,
     )
+    parser.add_argument("--our-model", action="store_true", help = "to load our model")
     return parser
 
 
@@ -84,7 +94,7 @@ def default_setup(cfg, args):
         PathManager.mkdirs(output_dir)
 
     rank = comm.get_rank()
-    # setup_logger(output_dir, distributed_rank=rank, name="fvcore")
+    setup_logger(output_dir, distributed_rank=rank, name="fvcore")
     logger = setup_logger(output_dir, distributed_rank=rank)
 
     logger.info("Rank of current process: {}. World size: {}".format(rank, comm.get_world_size()))
@@ -148,13 +158,16 @@ class DefaultPredictor:
         Returns:
             predictions (torch.tensor): the output features of the model
         """
-        inputs = {"images": image.to(self.model.device)}
+        inputs = {"images": image}
         with torch.no_grad():  # https://github.com/sphinx-doc/sphinx/issues/4258
             predictions = self.model(inputs)
-        return predictions.cpu()
+            # Normalize feature to compute cosine distance
+            features = F.normalize(predictions)
+            features = features.cpu().data
+            return features
 
 
-class DefaultTrainer(TrainerBase):
+class DefaultTrainer(SimpleTrainer):
     """
     A trainer with default training logic. Compared to `SimpleTrainer`, it
     contains the following logic in addition:
@@ -192,34 +205,27 @@ class DefaultTrainer(TrainerBase):
         Args:
             cfg (CfgNode):
         """
-
-        super().__init__()
-
         logger = logging.getLogger("fastreid")
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for fastreid
             setup_logger()
 
         # Assume these objects must be constructed in this order.
         data_loader = self.build_train_loader(cfg)
-        cfg = self.auto_scale_hyperparams(cfg, data_loader.dataset.num_classes)
+        cfg = self.auto_scale_hyperparams(cfg, data_loader)
         model = self.build_model(cfg)
-        optimizer, param_wrapper = self.build_optimizer(cfg, model)
+        optimizer = self.build_optimizer(cfg, model)
 
         # For training, wrap with DDP. But don't need this for inference.
         if comm.get_world_size() > 1:
             # ref to https://github.com/pytorch/pytorch/issues/22049 to set `find_unused_parameters=True`
             # for part of the parameters is not updated.
             model = DistributedDataParallel(
-                model, device_ids=[comm.get_local_rank()], broadcast_buffers=False,
+                model, device_ids=[comm.get_local_rank()], broadcast_buffers=False
             )
 
-        self._trainer = (AMPTrainer if cfg.SOLVER.AMP.ENABLED else SimpleTrainer)(
-            model, data_loader, optimizer, param_wrapper
-        )
+        super().__init__(model, data_loader, optimizer, cfg.SOLVER.AMP_ENABLED)
 
-        self.iters_per_epoch = len(data_loader.dataset) // cfg.SOLVER.IMS_PER_BATCH
-        self.scheduler = self.build_lr_scheduler(cfg, optimizer, self.iters_per_epoch)
-
+        self.scheduler = self.build_lr_scheduler(cfg, optimizer)
         # Assume no other objects need to be checkpointed.
         # We can later make it checkpoint the stateful hooks
         self.checkpointer = Checkpointer(
@@ -228,27 +234,22 @@ class DefaultTrainer(TrainerBase):
             cfg.OUTPUT_DIR,
             save_to_disk=comm.is_main_process(),
             optimizer=optimizer,
-            **self.scheduler,
+            scheduler=self.scheduler,
         )
+        self.start_iter = 0
+        if cfg.SOLVER.SWA.ENABLED:
+            self.max_iter = cfg.SOLVER.MAX_ITER + cfg.SOLVER.SWA.ITER
+        else:
+            self.max_iter = cfg.SOLVER.MAX_ITER
 
-        self.start_epoch = 0
-        self.max_epoch = cfg.SOLVER.MAX_EPOCH
-        self.max_iter = self.max_epoch * self.iters_per_epoch
-        self.warmup_iters = cfg.SOLVER.WARMUP_ITERS
-        self.delay_epochs = cfg.SOLVER.DELAY_EPOCHS
         self.cfg = cfg
 
         self.register_hooks(self.build_hooks())
 
     def resume_or_load(self, resume=True):
         """
-        If `resume==True` and `cfg.OUTPUT_DIR` contains the last checkpoint (defined by
-        a `last_checkpoint` file), resume from the file. Resuming means loading all
-        available states (eg. optimizer and scheduler) and update iteration counter
-        from the checkpoint. ``cfg.MODEL.WEIGHTS`` will not be used.
-        Otherwise, this is considered as an independent training. The method will load model
-        weights from the file `cfg.MODEL.WEIGHTS` (but will not load other states) and start
-        from iteration 0.
+        If `resume==True`, and last checkpoint exists, resume from it.
+        Otherwise, load a model specified by the config.
         Args:
             resume (bool): whether to do resume or not
         """
@@ -257,7 +258,7 @@ class DefaultTrainer(TrainerBase):
         checkpoint = self.checkpointer.resume_or_load(self.cfg.MODEL.WEIGHTS, resume=resume)
 
         if resume and self.checkpointer.has_checkpoint():
-            self.start_epoch = checkpoint.get("epoch", -1) + 1
+            self.start_iter = checkpoint.get("iteration", -1) + 1
             # The checkpoint stores the training iteration that just finished, thus we start
             # at the next iteration (or iter zero if there's no checkpoint).
 
@@ -279,6 +280,17 @@ class DefaultTrainer(TrainerBase):
             hooks.LRScheduler(self.optimizer, self.scheduler),
         ]
 
+        if cfg.SOLVER.SWA.ENABLED:
+            ret.append(
+                hooks.SWA(
+                    cfg.SOLVER.MAX_ITER,
+                    cfg.SOLVER.SWA.PERIOD,
+                    cfg.SOLVER.SWA.LR_FACTOR,
+                    cfg.SOLVER.SWA.ETA_MIN_LR,
+                    cfg.SOLVER.SWA.LR_SCHED,
+                )
+            )
+
         if cfg.TEST.PRECISE_BN.ENABLED and hooks.get_bn_modules(self.model):
             logger.info("Prepare precise BN dataset")
             ret.append(hooks.PreciseBN(
@@ -289,28 +301,31 @@ class DefaultTrainer(TrainerBase):
                 cfg.TEST.PRECISE_BN.NUM_ITER,
             ))
 
-        if len(cfg.MODEL.FREEZE_LAYERS) > 0 and cfg.SOLVER.FREEZE_ITERS > 0:
-            ret.append(hooks.LayerFreeze(
+        if cfg.MODEL.FREEZE_LAYERS != [''] and cfg.SOLVER.FREEZE_ITERS > 0:
+            freeze_layers = ",".join(cfg.MODEL.FREEZE_LAYERS)
+            logger.info(f'Freeze layer group "{freeze_layers}" training for {cfg.SOLVER.FREEZE_ITERS:d} iterations')
+            ret.append(hooks.FreezeLayer(
                 self.model,
+                self.optimizer,
                 cfg.MODEL.FREEZE_LAYERS,
                 cfg.SOLVER.FREEZE_ITERS,
             ))
-
         # Do PreciseBN before checkpointer, because it updates the model and need to
         # be saved by checkpointer.
         # This is not always the best: if checkpointing has a different frequency,
         # some checkpoints may have more precise statistics than others.
+        if comm.is_main_process():
+            ret.append(hooks.PeriodicCheckpointer(self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD))
 
         def test_and_save_results():
             self._last_eval_results = self.test(self.cfg, self.model)
             return self._last_eval_results
 
-        # Do evaluation before checkpointer, because then if it fails,
+        # Do evaluation after checkpointer, because then if it fails,
         # we can use the saved checkpoint to debug.
         ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD, test_and_save_results))
 
         if comm.is_main_process():
-            ret.append(hooks.PeriodicCheckpointer(self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD))
             # run writers in the end, so that evaluation metrics are written
             ret.append(hooks.PeriodicWriter(self.build_writers(), 200))
 
@@ -347,16 +362,13 @@ class DefaultTrainer(TrainerBase):
         Returns:
             OrderedDict of results, if evaluation is enabled. Otherwise None.
         """
-        super().train(self.start_epoch, self.max_epoch, self.iters_per_epoch)
+        super().train(self.start_iter, self.max_iter)
         if comm.is_main_process():
             assert hasattr(
                 self, "_last_eval_results"
             ), "No evaluation results obtained during training!"
+            # verify_results(self.cfg, self._last_eval_results)
             return self._last_eval_results
-
-    def run_step(self):
-        self._trainer.iter = self.iter
-        self._trainer.run_step()
 
     @classmethod
     def build_model(cls, cfg):
@@ -367,8 +379,8 @@ class DefaultTrainer(TrainerBase):
         Overwrite it if you'd like a different model.
         """
         model = build_model(cfg)
-        logger = logging.getLogger(__name__)
-        logger.info("Model:\n{}".format(model))
+        # logger = logging.getLogger(__name__)
+        # logger.info("Model:\n{}".format(model))
         return model
 
     @classmethod
@@ -382,34 +394,34 @@ class DefaultTrainer(TrainerBase):
         return build_optimizer(cfg, model)
 
     @classmethod
-    def build_lr_scheduler(cls, cfg, optimizer, iters_per_epoch):
+    def build_lr_scheduler(cls, cfg, optimizer):
         """
         It now calls :func:`fastreid.solver.build_lr_scheduler`.
         Overwrite it if you'd like a different scheduler.
         """
-        return build_lr_scheduler(cfg, optimizer, iters_per_epoch)
+        return build_lr_scheduler(cfg, optimizer)
 
     @classmethod
     def build_train_loader(cls, cfg):
         """
         Returns:
             iterable
-        It now calls :func:`fastreid.data.build_reid_train_loader`.
+        It now calls :func:`fastreid.data.build_detection_train_loader`.
         Overwrite it if you'd like a different data loader.
         """
         logger = logging.getLogger(__name__)
         logger.info("Prepare training set")
-        return build_reid_train_loader(cfg, combineall=cfg.DATASETS.COMBINEALL)
+        return build_reid_train_loader(cfg)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
         """
         Returns:
             iterable
-        It now calls :func:`fastreid.data.build_reid_test_loader`.
+        It now calls :func:`fastreid.data.build_detection_test_loader`.
         Overwrite it if you'd like a different data loader.
         """
-        return build_reid_test_loader(cfg, dataset_name=dataset_name)
+        return build_reid_test_loader(cfg, dataset_name)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_dir=None):
@@ -417,7 +429,7 @@ class DefaultTrainer(TrainerBase):
         return data_loader, ReidEvaluator(cfg, num_query, output_dir)
 
     @classmethod
-    def test(cls, cfg, model):
+    def test(cls, cfg, model,levit_config=False):
         """
         Args:
             cfg (CfgNode):
@@ -438,55 +450,63 @@ class DefaultTrainer(TrainerBase):
                 )
                 results[dataset_name] = {}
                 continue
-            results_i = inference_on_dataset(model, data_loader, evaluator, flip_test=cfg.TEST.FLIP.ENABLED)
+            results_i, sim_mtx, img_paths, labels = inference_on_dataset(model, data_loader, evaluator,levit_config=levit_config)
             results[dataset_name] = results_i
+        save_dict = {'sim_mtx': sim_mtx, 'img_paths' : img_paths, 'labels': labels}
+        #np.savez('resnet50.npz', save_dict)
+        # with open('ourmodel_simmtx.pkl','wb') as fp:
+        #     pickle.dump(save_dict,fp)
+        if comm.is_main_process():
+            assert isinstance(
+                results, dict
+            ), "Evaluator must return a dict on the main process. Got {} instead.".format(
+                results
+            )
+            print_csv_format(results)
 
-            if comm.is_main_process():
-                assert isinstance(
-                    results, dict
-                ), "Evaluator must return a dict on the main process. Got {} instead.".format(
-                    results
-                )
-                logger.info("Evaluation results for {} in csv format:".format(dataset_name))
-                results_i['dataset'] = dataset_name
-                print_csv_format(results_i)
-
-        if len(results) == 1:
-            results = list(results.values())[0]
+        if len(results) == 1: results = list(results.values())[0]
 
         return results
 
     @staticmethod
-    def auto_scale_hyperparams(cfg, num_classes):
+    def auto_scale_hyperparams(cfg, data_loader):
         r"""
         This is used for auto-computation actual training iterations,
         because some hyper-param, such as MAX_ITER, means training epochs rather than iters,
         so we need to convert specific hyper-param to training iterations.
         """
+
         cfg = cfg.clone()
         frozen = cfg.is_frozen()
         cfg.defrost()
 
-        # If you don't hard-code the number of classes, it will compute the number automatically
-        if cfg.MODEL.HEADS.NUM_CLASSES == 0:
-            output_dir = cfg.OUTPUT_DIR
-            cfg.MODEL.HEADS.NUM_CLASSES = num_classes
-            logger = logging.getLogger(__name__)
-            logger.info(f"Auto-scaling the num_classes={cfg.MODEL.HEADS.NUM_CLASSES}")
+        iters_per_epoch = len(data_loader.dataset) // cfg.SOLVER.IMS_PER_BATCH
+        cfg.MODEL.HEADS.NUM_CLASSES = data_loader.dataset.num_classes
+        cfg.SOLVER.MAX_ITER *= iters_per_epoch
+        cfg.SOLVER.WARMUP_ITERS *= iters_per_epoch
+        cfg.SOLVER.FREEZE_ITERS *= iters_per_epoch
+        cfg.SOLVER.DELAY_ITERS *= iters_per_epoch
+        for i in range(len(cfg.SOLVER.STEPS)):
+            cfg.SOLVER.STEPS[i] *= iters_per_epoch
+        cfg.SOLVER.SWA.ITER *= iters_per_epoch
+        cfg.SOLVER.SWA.PERIOD *= iters_per_epoch
 
-            # Update the saved config file to make the number of classes valid
-            if comm.is_main_process() and output_dir:
-                # Note: some of our scripts may expect the existence of
-                # config.yaml in output directory
-                path = os.path.join(output_dir, "config.yaml")
-                with PathManager.open(path, "w") as f:
-                    f.write(cfg.dump())
+        ckpt_multiple = cfg.SOLVER.CHECKPOINT_PERIOD / cfg.TEST.EVAL_PERIOD
+        # Evaluation period must be divided by 200 for writing into tensorboard.
+        eval_num_mod = (200 - cfg.TEST.EVAL_PERIOD * iters_per_epoch) % 200
+        cfg.TEST.EVAL_PERIOD = cfg.TEST.EVAL_PERIOD * iters_per_epoch + eval_num_mod
+        # Change checkpoint saving period consistent with evaluation period.
+        cfg.SOLVER.CHECKPOINT_PERIOD = int(cfg.TEST.EVAL_PERIOD * ckpt_multiple)
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"Auto-scaling the config to num_classes={cfg.MODEL.HEADS.NUM_CLASSES}, "
+            f"max_Iter={cfg.SOLVER.MAX_ITER}, wamrup_Iter={cfg.SOLVER.WARMUP_ITERS}, "
+            f"freeze_Iter={cfg.SOLVER.FREEZE_ITERS}, delay_Iter={cfg.SOLVER.DELAY_ITERS}, "
+            f"step_Iter={cfg.SOLVER.STEPS}, ckpt_Iter={cfg.SOLVER.CHECKPOINT_PERIOD}, "
+            f"eval_Iter={cfg.TEST.EVAL_PERIOD}."
+        )
 
         if frozen: cfg.freeze()
 
         return cfg
-
-
-# Access basic attributes from the underlying trainer
-for _attr in ["model", "data_loader", "optimizer", "grad_scaler"]:
-    setattr(DefaultTrainer, _attr, property(lambda self, x=_attr: getattr(self._trainer, x, None)))

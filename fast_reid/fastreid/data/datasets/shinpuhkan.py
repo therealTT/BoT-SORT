@@ -14,8 +14,6 @@ __all__ = ['Shinpuhkan', ]
 
 @DATASET_REGISTRY.register()
 class Shinpuhkan(ImageDataset):
-    """shinpuhkan
-    """
     dataset_dir = "shinpuhkan"
     dataset_name = 'shinpuhkan'
 

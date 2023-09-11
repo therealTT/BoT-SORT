@@ -17,8 +17,7 @@ class VeRi(ImageDataset):
     """VeRi.
 
     Reference:
-        Xinchen Liu et al. A Deep Learning based Approach for Progressive Vehicle Re-Identification. ECCV 2016.
-        Xinchen Liu et al. PROVID: Progressive and Multimodal Vehicle Reidentification for Large-Scale Urban Surveillance. IEEE TMM 2018.
+        Liu et al. A Deep Learning based Approach for Progressive Vehicle Re-Identification. ECCV 2016.
 
     URL: `<https://vehiclereid.github.io/VeRi/>`_
 
@@ -58,7 +57,7 @@ class VeRi(ImageDataset):
         for img_path in img_paths:
             pid, camid = map(int, pattern.search(img_path).groups())
             if pid == -1: continue  # junk images are just ignored
-            assert 0 <= pid <= 776
+            assert 1 <= pid <= 776
             assert 1 <= camid <= 20
             camid -= 1  # index starts from 0
             if is_train:

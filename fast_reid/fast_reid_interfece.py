@@ -15,9 +15,9 @@ from sc_levit import get_levit
 import matplotlib.pyplot as plt
 #from FastSAM.fastsam import FastSAM, FastSAMPrompt
 
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
-import supervision as sv
-from transformers import Mask2FormerImageProcessor, AutoImageProcessor, Mask2FormerForUniversalSegmentation, AutoFeatureExtractor, SegformerForSemanticSegmentation
+# from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+# import supervision as sv
+# from transformers import Mask2FormerImageProcessor, AutoImageProcessor, Mask2FormerForUniversalSegmentation, AutoFeatureExtractor, SegformerForSemanticSegmentation
 
 
 def setup_cfg(config_file, opts):
@@ -68,24 +68,24 @@ class FastReIDInterface:
 
         self.cfg = setup_cfg(config_file, ['MODEL.WEIGHTS', weights_path])
 
-        # self.model = build_model(self.cfg)
-        # self.model.eval()
+        self.model = build_model(self.cfg)
+        self.model.eval()
 
 
-        self.model = get_levit('levit_384', pretrained=True, feature_dim=1024)
+        # self.model = get_levit('levit_384', pretrained=True, feature_dim=1024)
 
-        self.ckpt_file = './levit_model/best_model.th'
+        # self.ckpt_file = './levit_model/best_model.th'
 
-        Checkpointer(self.model).load(self.ckpt_file)
+        #Checkpointer(self.model).load(self.ckpt_file)
 
-        #Checkpointer(self.model).load(weights_path)
+        Checkpointer(self.model).load(weights_path)
 
-        sam_checkpoint = "/home/tony/Desktop/BoT-SORT/sam_weights/sam_vit_h_4b8939.pth"
-        model_type = "vit_h"
-        sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-        sam.to(device='cuda')
+        # sam_checkpoint = "/home/tony/Desktop/BoT-SORT/sam_weights/sam_vit_h_4b8939.pth"
+        # model_type = "vit_h"
+        # sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        # sam.to(device='cuda')
 
-        self.mask_predictor = SamPredictor(sam)
+        # self.mask_predictor = SamPredictor(sam)
 
         # self.processor = Mask2FormerImageProcessor()
         # self.processor = AutoImageProcessor.from_pretrained("facebook/mask2former-swin-base-coco-panoptic")
@@ -120,17 +120,17 @@ class FastReIDInterface:
             print(patch.shape[0])
             
 
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            self.mask_predictor.set_image(image_rgb)
-            bbox = np.array(tlbr)
+            #patch = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+            # self.mask_predictor.set_image(image_rgb)
+            # bbox = np.array(tlbr)
 
-            masks, scores, logits = self.mask_predictor.predict(box=bbox, multimask_output=False)
-            mask = masks[0].astype(np.uint8)
-            masked_img = cv2.bitwise_and(image,image,mask=mask)
-            patch = masked_img[tlbr[1]:tlbr[3], tlbr[0]:tlbr[2], :]
+            # masks, scores, logits = self.mask_predictor.predict(box=bbox, multimask_output=False)
+            # mask = masks[0].astype(np.uint8)
+            # masked_img = cv2.bitwise_and(image,image,mask=mask)
+            # patch = masked_img[tlbr[1]:tlbr[3], tlbr[0]:tlbr[2], :]
 
             # the model expects RGB inputs
-            # patch = patch[:, :, ::-1]
+            #patch = patch[:, :, ::-1]
 
             # inputs = self.processor(images=patch, return_tensors="pt")
             # inputs = {k: v.to(device='cuda') for k, v in inputs.items()}
@@ -152,8 +152,8 @@ class FastReIDInterface:
 
             # Apply pre-processing to image.
             patch = cv2.resize(patch, tuple(self.cfg.INPUT.SIZE_TEST[::-1]), interpolation=cv2.INTER_LINEAR)
-            cv2.imshow("mask",patch)
-            cv2.waitKey(1000)
+            # cv2.imshow("mask",patch)
+            # cv2.waitKey(1000)
             # patch, scale = preprocess(patch, self.cfg.INPUT.SIZE_TEST[::-1])
 
             # plt.figure()
@@ -175,9 +175,9 @@ class FastReIDInterface:
             patches = torch.stack(patches, dim=0)
             batch_patches.append(patches)
 
-        #features = np.zeros((0, 2048))
+        features = np.zeros((0, 2048))
         # features = np.zeros((0, 768))
-        features = np.zeros((0,1024))
+        #features = np.zeros((0,1024))
 
         for patches in batch_patches:
 

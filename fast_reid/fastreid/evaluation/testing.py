@@ -8,27 +8,29 @@ import numpy as np
 from tabulate import tabulate
 from termcolor import colored
 
+logger = logging.getLogger(__name__)
+
 
 def print_csv_format(results):
     """
-    Print main metrics in a format similar to Detectron2,
+    Print main metrics in a format similar to Detectron,
     so that they are easy to copypaste into a spreadsheet.
     Args:
-        results (OrderedDict): {metric -> score}
+        results (OrderedDict[dict]): task_name -> {metric -> score}
     """
-    # unordered results cannot be properly printed
-    assert isinstance(results, OrderedDict) or not len(results), results
-    logger = logging.getLogger(__name__)
+    assert isinstance(results, OrderedDict), results  # unordered results cannot be properly printed
+    task = list(results.keys())[0]
+    metrics = ["Datasets"] + [k for k in results[task]]
 
-    dataset_name = results.pop('dataset')
-    metrics = ["Dataset"] + [k for k in results]
-    csv_results = [(dataset_name, *list(results.values()))]
+    csv_results = []
+    for task, res in results.items():
+        csv_results.append((task, *list(res.values())))
 
     # tabulate it
     table = tabulate(
         csv_results,
         tablefmt="pipe",
-        floatfmt=".2f",
+        floatfmt=".2%",
         headers=metrics,
         numalign="left",
     )

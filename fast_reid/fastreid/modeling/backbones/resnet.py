@@ -27,6 +27,7 @@ model_urls = {
     '34x': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
     '50x': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
     '101x': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+    '152x': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
     'ibn_18x': 'https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet18_ibn_a-2f571257.pth',
     'ibn_34x': 'https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet34_ibn_a-94bc1577.pth',
     'ibn_50x': 'https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet50_ibn_a-d9d0bb7b.pth',
@@ -65,7 +66,6 @@ class BasicBlock(nn.Module):
 
         out = self.conv2(out)
         out = self.bn2(out)
-        out = self.se(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
@@ -132,8 +132,8 @@ class ResNet(nn.Module):
                                bias=False)
         self.bn1 = get_norm(bn_norm, 64)
         self.relu = nn.ReLU(inplace=True)
-        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, ceil_mode=True)
         self.layer1 = self._make_layer(block, 64, layers[0], 1, bn_norm, with_ibn, with_se)
         self.layer2 = self._make_layer(block, 128, layers[1], 2, bn_norm, with_ibn, with_se)
         self.layer3 = self._make_layer(block, 256, layers[2], 2, bn_norm, with_ibn, with_se)
@@ -183,7 +183,6 @@ class ResNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        # layer 1
         NL1_counter = 0
         if len(self.NL_1_idx) == 0:
             self.NL_1_idx = [-1]
@@ -193,7 +192,7 @@ class ResNet(nn.Module):
                 _, C, H, W = x.shape
                 x = self.NL_1[NL1_counter](x)
                 NL1_counter += 1
-        # layer 2
+        # Layer 2
         NL2_counter = 0
         if len(self.NL_2_idx) == 0:
             self.NL_2_idx = [-1]
@@ -203,8 +202,7 @@ class ResNet(nn.Module):
                 _, C, H, W = x.shape
                 x = self.NL_2[NL2_counter](x)
                 NL2_counter += 1
-
-        # layer 3
+        # Layer 3
         NL3_counter = 0
         if len(self.NL_3_idx) == 0:
             self.NL_3_idx = [-1]
@@ -214,8 +212,7 @@ class ResNet(nn.Module):
                 _, C, H, W = x.shape
                 x = self.NL_3[NL3_counter](x)
                 NL3_counter += 1
-
-        # layer 4
+        # Layer 4
         NL4_counter = 0
         if len(self.NL_4_idx) == 0:
             self.NL_4_idx = [-1]
@@ -278,7 +275,6 @@ def init_pretrained_weights(key):
     cached_file = os.path.join(model_dir, filename)
 
     if not os.path.exists(cached_file):
-        logger.info(f"Pretrain model don't exist, downloading from {model_urls[key]}")
         if comm.is_main_process():
             gdown.download(model_urls[key], cached_file, quiet=False)
 
@@ -314,20 +310,23 @@ def build_resnet_backbone(cfg):
         '34x': [3, 4, 6, 3],
         '50x': [3, 4, 6, 3],
         '101x': [3, 4, 23, 3],
+        '152x': [3, 8, 36, 3],
     }[depth]
 
     nl_layers_per_stage = {
         '18x': [0, 0, 0, 0],
         '34x': [0, 0, 0, 0],
         '50x': [0, 2, 3, 0],
-        '101x': [0, 2, 9, 0]
+        '101x': [0, 2, 9, 0],
+        '152x': [0, 4, 12, 0]
     }[depth]
 
     block = {
         '18x': BasicBlock,
         '34x': BasicBlock,
         '50x': Bottleneck,
-        '101x': Bottleneck
+        '101x': Bottleneck,
+        '152x': Bottleneck,
     }[depth]
 
     model = ResNet(last_stride, bn_norm, with_ibn, with_se, with_nl, block,

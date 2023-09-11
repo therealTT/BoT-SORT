@@ -14,9 +14,6 @@ __all__ = ['AirportALERT', ]
 
 @DATASET_REGISTRY.register()
 class AirportALERT(ImageDataset):
-    """Airport 
-
-    """
     dataset_dir = "AirportALERT"
     dataset_name = "airport"
 
@@ -43,8 +40,7 @@ class AirportALERT(ImageDataset):
             camid = self.dataset_name + "_" + split_path[0]
             pid = self.dataset_name + "_" + split_path[1]
             img_path = os.path.join(dir_path, img_path)
-            # if 11001 <= int(split_path[1]) <= 401999:
-            if 11001 <= int(split_path[1]):
+            if 11001 <= int(split_path[1]) <= 401999:
                 data.append([img_path, pid, camid])
 
         return data
