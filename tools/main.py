@@ -22,6 +22,8 @@ from tracker.tracking_utils.timer import Timer
 from multicam import MultiCameraTracking
 from video_stream import RoundRobinVideoStream
 
+import torch
+torch.cuda.set_device(1)
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 
@@ -60,8 +62,8 @@ def make_parser():
 
     # ReID
     parser.add_argument("--with-reid", dest="with_reid", default=False, action="store_true", help="test mot20.")
-    parser.add_argument("--fast-reid-config", dest="fast_reid_config", default=r"fast_reid/configs/MOT17/sbs_S50.yml", type=str, help="reid config file path")
-    parser.add_argument("--fast-reid-weights", dest="fast_reid_weights", default=r"pretrained/mot17_sbs_S50.pth", type=str,help="reid config file path")
+    parser.add_argument("--fast-reid-config", dest="fast_reid_config", default=r"fast_reid/configs/MOT20/sbs_S50.yml", type=str, help="reid config file path")
+    parser.add_argument("--fast-reid-weights", dest="fast_reid_weights", default=r"pretrained/mot20_sbs_S50.pth", type=str,help="reid config file path")
     parser.add_argument('--proximity_thresh', type=float, default=0.5, help='threshold for rejecting low overlap reid matches')
     parser.add_argument('--appearance_thresh', type=float, default=0.25, help='threshold for rejecting low appearance similarity reid matches')
     return parser
@@ -300,6 +302,14 @@ def multicam(predictor, vis_folder, current_time, args):
     tracker = MultiCameraTracking(args, frame_rate=args.fps)
     vs = iter(RoundRobinVideoStream(args.path))
     num_cameras = vs.get_num_cameras()
+    # width, height, fps = next(vs)[1:4]
+    # timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
+    # save_folder = osp.join(vis_folder, timestamp)
+    # os.makedirs(save_folder, exist_ok=True)
+    # save_path = osp.join(save_folder, "output.mp4")
+    # vid_writer = cv2.VideoWriter(
+    #         save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps[0], (int(width[0]), int(height[0]))
+    #     )
     vid_writers = []
     for c in range(num_cameras):
         width, height, fps = next(vs)[1:4]  # Get width, height, and fps for camera c
@@ -338,6 +348,7 @@ def multicam(predictor, vis_folder, current_time, args):
                 online_tlwhs = []
                 online_ids = []
                 online_scores = []
+                online_names = []
                 for t in online_targets:
                     tlwh = t.tlwh
                     tid = t.track_id
@@ -346,12 +357,13 @@ def multicam(predictor, vis_folder, current_time, args):
                         online_tlwhs.append(tlwh)
                         online_ids.append(tid)
                         online_scores.append(t.score)
+                        online_names.append(t.name)
                         results.append(
                             f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
                         )
                 timer.toc()
                 online_im = plot_tracking(
-                    img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id + 1, fps=1. / timer.average_time
+                    img_info['raw_img'], online_tlwhs, online_ids, online_names, frame_id=frame_id + 1, fps=1. / timer.average_time
                 )
 
             else:
@@ -387,7 +399,7 @@ def multicam(predictor, vis_folder, current_time, args):
             ch = cv2.waitKey(1)
             if ch == 27 or ch == ord("q") or ch == ord("Q"):
                 break
-    
+    tracker.conn.close()
     # for video_path in args.path:
     #     task = imageflow_demo(tracker, predictor, vis_folder, current_time, args, video_path, cam_id)
     #     tasks.append(task)
